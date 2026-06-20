@@ -7,6 +7,7 @@ import type {
   SignalStats,
   AnomalyItem,
   AnomalyType,
+  AnomalyFrameGroup,
   ExportPreviewData
 } from '../types';
 import { parseDbc, decodeCanFrame, DEFAULT_DBC_CONTENT } from '../utils/dbc-parser';
@@ -224,6 +225,21 @@ export const useCanBusStore = defineStore('canbus', () => {
     const signalDataMap = new Map<string, number[]>();
     const anomalies: AnomalyItem[] = [];
     const prevSignalValues = new Map<string, number>();
+    const frameAnomalyMap = new Map<string, AnomalyItem[]>();
+    let anomalyIdCounter = 0;
+
+    function addAnomaly(anomaly: Omit<AnomalyItem, 'id'>): void {
+      const item: AnomalyItem = {
+        ...anomaly,
+        id: `anomaly-${++anomalyIdCounter}`
+      };
+      anomalyCountByType[anomaly.type]++;
+      anomalies.push(item);
+      if (!frameAnomalyMap.has(anomaly.frameId)) {
+        frameAnomalyMap.set(anomaly.frameId, []);
+      }
+      frameAnomalyMap.get(anomaly.frameId)!.push(item);
+    }
 
     for (const frame of fs) {
       uniqueIdSet.add(frame.arbitrationId);
@@ -238,13 +254,13 @@ export const useCanBusStore = defineStore('canbus', () => {
         decodedCount++;
 
         if (frame.dlc !== msgDef.dlc) {
-          anomalyCountByType.data_length++;
-          anomalies.push({
+          addAnomaly({
             type: 'data_length',
             frameId: frame.id,
             timestamp: frame.timestamp,
-            message: `数据长度异常: 期望 DLC=${msgDef.dlc}, 实际 DLC=${frame.dlc}`,
-            details: `CAN ID: 0x${frame.arbitrationId.toString(16).toUpperCase()}`
+            message: `数据长度异常`,
+            details: `期望 DLC=${msgDef.dlc}, 实际 DLC=${frame.dlc}`,
+            signalName: undefined
           });
         }
 
@@ -255,13 +271,13 @@ export const useCanBusStore = defineStore('canbus', () => {
 
           const sigInfo = signalMap.get(name);
           if (sigInfo && (value < sigInfo.min || value > sigInfo.max)) {
-            anomalyCountByType.out_of_range++;
-            anomalies.push({
+            addAnomaly({
               type: 'out_of_range',
               frameId: frame.id,
               timestamp: frame.timestamp,
-              message: `${name} 值超出范围`,
-              details: `值: ${value.toFixed(2)}${sigInfo.unit}, 范围: [${sigInfo.min}, ${sigInfo.max}]`
+              message: `${name} 超出范围`,
+              details: `值: ${value.toFixed(2)}${sigInfo.unit}, 范围: [${sigInfo.min}, ${sigInfo.max}]`,
+              signalName: name
             });
           }
 
@@ -269,13 +285,13 @@ export const useCanBusStore = defineStore('canbus', () => {
           if (prev !== undefined && sigInfo) {
             const range = sigInfo.max - sigInfo.min;
             if (range > 0 && Math.abs(value - prev) > range * 0.5) {
-              anomalyCountByType.jump++;
-              anomalies.push({
+              addAnomaly({
                 type: 'jump',
                 frameId: frame.id,
                 timestamp: frame.timestamp,
                 message: `${name} 值突变`,
-                details: `${prev.toFixed(2)} → ${value.toFixed(2)}${sigInfo.unit}, 变化: ${(Math.abs(value - prev)).toFixed(2)}`
+                details: `${prev.toFixed(2)} → ${value.toFixed(2)}${sigInfo.unit}, 变化: ${(Math.abs(value - prev)).toFixed(2)}`,
+                signalName: name
               });
             }
           }
@@ -283,13 +299,13 @@ export const useCanBusStore = defineStore('canbus', () => {
         }
       } else {
         undecodedCount++;
-        anomalyCountByType.unknown_id++;
-        anomalies.push({
+        addAnomaly({
           type: 'unknown_id',
           frameId: frame.id,
           timestamp: frame.timestamp,
-          message: '未知 CAN ID（无 DBC 定义）',
-          details: `CAN ID: 0x${frame.arbitrationId.toString(16).toUpperCase()}`
+          message: '未知 CAN ID',
+          details: `0x${frame.arbitrationId.toString(16).toUpperCase()} 无 DBC 定义`,
+          signalName: undefined
         });
       }
     }
@@ -319,6 +335,21 @@ export const useCanBusStore = defineStore('canbus', () => {
 
     anomalies.sort((a, b) => b.timestamp - a.timestamp);
 
+    const anomalyFrameGroups: AnomalyFrameGroup[] = [];
+    for (const frame of fs) {
+      const frameAnomalies = frameAnomalyMap.get(frame.id);
+      if (frameAnomalies && frameAnomalies.length > 0) {
+        anomalyFrameGroups.push({
+          frameId: frame.id,
+          timestamp: frame.timestamp,
+          arbitrationId: frame.arbitrationId,
+          direction: frame.direction,
+          anomalies: frameAnomalies
+        });
+      }
+    }
+    anomalyFrameGroups.sort((a, b) => b.timestamp - a.timestamp);
+
     return {
       frameCount: fs.length,
       timeRange: timeStart !== null && timeEnd !== null
@@ -331,7 +362,8 @@ export const useCanBusStore = defineStore('canbus', () => {
       undecodedCount,
       signalStats,
       anomalies,
-      anomalyCountByType
+      anomalyCountByType,
+      anomalyFrameGroups
     };
   }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, computed } from 'vue';
 import { useCanBusStore } from '../store/canbus';
-import type { ExportPreviewData, AnomalyType } from '../types';
+import type { ExportPreviewData, AnomalyType, AnomalyFrameGroup } from '../types';
 
 const props = defineProps<{
   visible: boolean;
@@ -13,19 +13,26 @@ const emit = defineEmits<{
 }>();
 
 const store = useCanBusStore();
+const expandedFrameIds = ref<Set<string>>(new Set());
 
 const preview = computed<ExportPreviewData>(() => store.getExportPreview());
 
-const totalAnomalies = computed(() => {
-  const t = preview.value.anomalyCountByType;
-  return t.out_of_range + t.unknown_id + t.data_length + t.jump;
+const totalAnomalies = computed(() => preview.value.anomalies.length);
+
+const affectedFrameCount = computed(() => preview.value.anomalyFrameGroups.length);
+
+const displayedGroups = computed(() => {
+  const maxDisplayGroups = 30;
+  return preview.value.anomalyFrameGroups.slice(0, maxDisplayGroups);
 });
 
-const anomalyTypeLabels: Record<AnomalyType, { label: string; color: string; bg: string }> = {
-  out_of_range: { label: '值超出范围', color: 'text-red-400', bg: 'bg-red-900/30' },
-  unknown_id: { label: '未知 CAN ID', color: 'text-orange-400', bg: 'bg-orange-900/30' },
-  data_length: { label: '数据长度异常', color: 'text-yellow-400', bg: 'bg-yellow-900/30' },
-  jump: { label: '信号值突变', color: 'text-purple-400', bg: 'bg-purple-900/30' }
+const hasMoreGroups = computed(() => preview.value.anomalyFrameGroups.length > 30);
+
+const anomalyTypeLabels: Record<AnomalyType, { label: string; color: string; bg: string; borderColor: string; dotColor: string }> = {
+  out_of_range: { label: '值超范围', color: 'text-red-400', bg: 'bg-red-900/20', borderColor: 'border-red-800/40', dotColor: 'bg-red-500' },
+  unknown_id: { label: '未知 ID', color: 'text-orange-400', bg: 'bg-orange-900/20', borderColor: 'border-orange-800/40', dotColor: 'bg-orange-500' },
+  data_length: { label: '长度异常', color: 'text-yellow-400', bg: 'bg-yellow-900/20', borderColor: 'border-yellow-800/40', dotColor: 'bg-yellow-500' },
+  jump: { label: '值突变', color: 'text-purple-400', bg: 'bg-purple-900/20', borderColor: 'border-purple-800/40', dotColor: 'bg-purple-500' }
 };
 
 function formatDuration(ms: number): string {
@@ -45,6 +52,26 @@ function formatTime(ts: number): string {
 function formatDateTime(ts: number): string {
   const d = new Date(ts);
   return d.toLocaleString('zh-CN', { hour12: false });
+}
+
+function formatHexId(id: number): string {
+  return '0x' + id.toString(16).toUpperCase().padStart(3, '0');
+}
+
+function toggleFrameExpand(frameId: string): void {
+  if (expandedFrameIds.value.has(frameId)) {
+    expandedFrameIds.value.delete(frameId);
+  } else {
+    expandedFrameIds.value.add(frameId);
+  }
+}
+
+function isFrameExpanded(frameId: string): boolean {
+  return expandedFrameIds.value.has(frameId);
+}
+
+function getTypeCountInGroup(group: AnomalyFrameGroup, type: AnomalyType): number {
+  return group.anomalies.filter(a => a.type === type).length;
 }
 </script>
 
@@ -238,7 +265,7 @@ function formatDateTime(ts: number): string {
                   class="text-xs px-2 py-0.5 rounded-full font-medium"
                   :class="totalAnomalies > 0 ? 'bg-red-900/40 text-red-400' : 'bg-green-900/40 text-green-400'"
                 >
-                  {{ totalAnomalies > 0 ? `${totalAnomalies} 条异常` : '无异常' }}
+                  {{ totalAnomalies > 0 ? `${totalAnomalies} 条 / ${affectedFrameCount} 帧` : '无异常' }}
                 </span>
               </div>
 
@@ -257,46 +284,95 @@ function formatDateTime(ts: number): string {
                 </div>
               </div>
 
-              <!-- Anomaly List -->
+              <!-- Anomaly List - By Frame -->
               <div v-if="preview.anomalies.length === 0" class="text-sm text-green-400 py-6 text-center bg-gray-800/30 rounded-lg border border-green-900/30">
                 <svg class="w-8 h-8 mx-auto mb-2 text-green-500/60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 数据质量良好，未检测到异常
               </div>
-              <div v-else class="overflow-x-auto rounded-lg border border-gray-700 max-h-64 overflow-y-auto">
-                <table class="w-full text-sm">
-                  <thead class="bg-gray-800 sticky top-0">
-                    <tr class="text-gray-400 text-left">
-                      <th class="px-4 py-2.5 font-medium w-28">时间</th>
-                      <th class="px-4 py-2.5 font-medium w-28">类型</th>
-                      <th class="px-4 py-2.5 font-medium">描述</th>
-                      <th class="px-4 py-2.5 font-medium">详情</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="anomaly in preview.anomalies.slice(0, 50)"
-                      :key="anomaly.frameId + anomaly.type"
-                      class="border-t border-gray-800 hover:bg-gray-800/30 transition-colors"
-                    >
-                      <td class="px-4 py-2 text-gray-400 font-mono text-xs whitespace-nowrap">{{ formatTime(anomaly.timestamp) }}</td>
-                      <td class="px-4 py-2">
+              <div v-else class="space-y-2 max-h-80 overflow-y-auto rounded-lg border border-gray-700">
+                <div
+                  v-for="group in displayedGroups"
+                  :key="group.frameId"
+                  class="border-b border-gray-800 last:border-b-0"
+                >
+                  <!-- Frame Header -->
+                  <button
+                    @click="toggleFrameExpand(group.frameId)"
+                    class="w-full px-4 py-2.5 flex items-center justify-between hover:bg-gray-800/50 transition-colors text-left"
+                  >
+                    <div class="flex items-center gap-3">
+                      <svg
+                        class="w-4 h-4 text-gray-500 transition-transform flex-shrink-0"
+                        :class="{ 'rotate-90': isFrameExpanded(group.frameId) }"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                      </svg>
+                      <span class="text-gray-400 font-mono text-xs">{{ formatTime(group.timestamp) }}</span>
+                      <span
+                        class="px-1.5 py-0.5 rounded text-xs font-bold"
+                        :class="group.direction === 'RX' ? 'bg-green-900/50 text-green-400' : 'bg-blue-900/50 text-blue-400'"
+                      >
+                        {{ group.direction }}
+                      </span>
+                      <span class="text-cyan-400 font-mono text-sm font-bold">{{ formatHexId(group.arbitrationId) }}</span>
+                      <div class="flex items-center gap-1 ml-2">
                         <span
-                          class="px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap"
+                          v-for="type in (['out_of_range','unknown_id','data_length','jump'] as AnomalyType[])"
+                          :key="type"
+                          v-show="getTypeCountInGroup(group, type) > 0"
+                          class="w-2 h-2 rounded-full flex-shrink-0"
+                          :class="anomalyTypeLabels[type].dotColor"
+                          :title="`${anomalyTypeLabels[type].label}: ${getTypeCountInGroup(group, type)}条`"
+                        ></span>
+                      </div>
+                    </div>
+                    <span class="text-xs text-gray-500 flex-shrink-0 ml-2">
+                      {{ group.anomalies.length }} 条异常
+                    </span>
+                  </button>
+
+                  <!-- Anomaly Details -->
+                  <div v-show="isFrameExpanded(group.frameId)" class="px-4 pb-3 space-y-1.5">
+                    <div
+                      v-for="anomaly in group.anomalies"
+                      :key="anomaly.id"
+                      class="ml-7 pl-3 border-l-2 rounded-r-md py-2 px-3"
+                      :class="[anomalyTypeLabels[anomaly.type].borderColor, anomalyTypeLabels[anomaly.type].bg]"
+                    >
+                      <div class="flex items-center gap-2 mb-1">
+                        <span
+                          class="px-2 py-0.5 rounded text-xs font-medium flex-shrink-0"
                           :class="[anomalyTypeLabels[anomaly.type].color, anomalyTypeLabels[anomaly.type].bg]"
                         >
                           {{ anomalyTypeLabels[anomaly.type].label }}
                         </span>
-                      </td>
-                      <td class="px-4 py-2 text-gray-200">{{ anomaly.message }}</td>
-                      <td class="px-4 py-2 text-gray-500 text-xs font-mono">{{ anomaly.details }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div v-if="preview.anomalies.length > 50" class="px-4 py-2 bg-gray-800/50 text-center text-xs text-gray-500 border-t border-gray-700">
-                  仅显示前 50 条，共 {{ preview.anomalies.length }} 条异常
+                        <span class="text-gray-200 text-sm font-medium">{{ anomaly.message }}</span>
+                        <span v-if="anomaly.signalName" class="text-gray-500 text-xs font-mono ml-auto">
+                          信号: {{ anomaly.signalName }}
+                        </span>
+                      </div>
+                      <div class="text-gray-400 text-xs font-mono">{{ anomaly.details }}</div>
+                      <div class="text-gray-600 text-[10px] font-mono mt-1">异常ID: {{ anomaly.id }}</div>
+                    </div>
+                  </div>
                 </div>
+
+                <div v-if="hasMoreGroups" class="px-4 py-3 bg-gray-800/50 text-center text-xs text-gray-500 border-t border-gray-700">
+                  仅显示前 30 帧异常，共 {{ preview.anomalyFrameGroups.length }} 帧 / {{ totalAnomalies }} 条异常
+                </div>
+              </div>
+
+              <!-- Consistency Check Info -->
+              <div v-if="totalAnomalies > 0" class="mt-3 text-xs text-gray-500 flex items-center gap-2">
+                <svg class="w-4 h-4 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                统计校验: 类型分布合计 {{ Object.values(preview.anomalyCountByType).reduce((a, b) => a + b, 0) }} 条 = 列表 {{ totalAnomalies }} 条 ✓
               </div>
             </div>
           </template>

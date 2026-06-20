@@ -51,11 +51,21 @@ export interface SignalStats {
 export type AnomalyType = 'out_of_range' | 'unknown_id' | 'data_length' | 'jump';
 
 export interface AnomalyItem {
+  id: string;
   type: AnomalyType;
   frameId: string;
   timestamp: number;
   message: string;
   details?: string;
+  signalName?: string;
+}
+
+export interface AnomalyFrameGroup {
+  frameId: string;
+  timestamp: number;
+  arbitrationId: number;
+  direction: 'RX' | 'TX';
+  anomalies: AnomalyItem[];
 }
 
 export interface ExportPreviewData {
@@ -69,4 +79,5 @@ export interface ExportPreviewData {
   signalStats: SignalStats[];
   anomalies: AnomalyItem[];
   anomalyCountByType: Record<AnomalyType, number>;
+  anomalyFrameGroups: AnomalyFrameGroup[];
 }
