@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { useCanBusStore } from './store/canbus';
 import FrameTable from './components/FrameTable.vue';
 import SignalChart from './components/SignalChart.vue';
+import ExportPreview from './components/ExportPreview.vue';
 
 const store = useCanBusStore();
+const showExportPreview = ref(false);
 
 function handleLoadDbc() {
   store.loadMockDbc();
@@ -11,6 +14,10 @@ function handleLoadDbc() {
 }
 
 function handleExport() {
+  showExportPreview.value = true;
+}
+
+function handleConfirmExport() {
   const csv = store.exportFrames();
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -19,6 +26,7 @@ function handleExport() {
   a.download = `can_frames_${Date.now()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+  showExportPreview.value = false;
 }
 </script>
 
@@ -96,5 +104,12 @@ function handleExport() {
         <span>负载: {{ store.busLoadPercent }}%</span>
       </div>
     </footer>
+
+    <!-- Export Preview Modal -->
+    <ExportPreview
+      :visible="showExportPreview"
+      @close="showExportPreview = false"
+      @confirm="handleConfirmExport"
+    />
   </div>
 </template>

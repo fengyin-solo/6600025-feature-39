@@ -36,3 +36,37 @@ export interface BusStats {
   busLoad: number;
   lastUpdate: number;
 }
+
+export interface SignalStats {
+  name: string;
+  count: number;
+  min: number;
+  max: number;
+  avg: number;
+  last: number;
+  unit: string;
+  outOfRangeCount: number;
+}
+
+export type AnomalyType = 'out_of_range' | 'unknown_id' | 'data_length' | 'jump';
+
+export interface AnomalyItem {
+  type: AnomalyType;
+  frameId: string;
+  timestamp: number;
+  message: string;
+  details?: string;
+}
+
+export interface ExportPreviewData {
+  frameCount: number;
+  timeRange: { start: number; end: number } | null;
+  rxCount: number;
+  txCount: number;
+  uniqueIds: number;
+  decodedCount: number;
+  undecodedCount: number;
+  signalStats: SignalStats[];
+  anomalies: AnomalyItem[];
+  anomalyCountByType: Record<AnomalyType, number>;
+}

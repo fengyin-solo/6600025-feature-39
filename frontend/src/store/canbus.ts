@@ -1,6 +1,14 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { CanFrame, DbcMessage, BusStats } from '../types';
+import type {
+  CanFrame,
+  DbcMessage,
+  BusStats,
+  SignalStats,
+  AnomalyItem,
+  AnomalyType,
+  ExportPreviewData
+} from '../types';
 import { parseDbc, decodeCanFrame, DEFAULT_DBC_CONTENT } from '../utils/dbc-parser';
 
 let frameIdCounter = 0;
@@ -185,6 +193,148 @@ export const useCanBusStore = defineStore('canbus', () => {
     return decodeCanFrame(frame, msgDef);
   }
 
+  function getSignalMap(): Map<string, { min: number; max: number; unit: string }> {
+    const map = new Map<string, { min: number; max: number; unit: string }>();
+    for (const msg of dbcMessages.value.values()) {
+      for (const sig of msg.signals) {
+        map.set(sig.name, { min: sig.minValue, max: sig.maxValue, unit: sig.unit });
+      }
+    }
+    return map;
+  }
+
+  function getExportPreview(): ExportPreviewData {
+    const fs = frames.value;
+    const signalMap = getSignalMap();
+    const anomalyCountByType: Record<AnomalyType, number> = {
+      out_of_range: 0,
+      unknown_id: 0,
+      data_length: 0,
+      jump: 0
+    };
+
+    let rxCount = 0;
+    let txCount = 0;
+    let decodedCount = 0;
+    let undecodedCount = 0;
+    const uniqueIdSet = new Set<number>();
+    let timeStart: number | null = null;
+    let timeEnd: number | null = null;
+
+    const signalDataMap = new Map<string, number[]>();
+    const anomalies: AnomalyItem[] = [];
+    const prevSignalValues = new Map<string, number>();
+
+    for (const frame of fs) {
+      uniqueIdSet.add(frame.arbitrationId);
+      if (frame.direction === 'RX') rxCount++;
+      else txCount++;
+
+      if (timeStart === null || frame.timestamp < timeStart) timeStart = frame.timestamp;
+      if (timeEnd === null || frame.timestamp > timeEnd) timeEnd = frame.timestamp;
+
+      const msgDef = dbcMessages.value.get(frame.arbitrationId);
+      if (msgDef) {
+        decodedCount++;
+
+        if (frame.dlc !== msgDef.dlc) {
+          anomalyCountByType.data_length++;
+          anomalies.push({
+            type: 'data_length',
+            frameId: frame.id,
+            timestamp: frame.timestamp,
+            message: `数据长度异常: 期望 DLC=${msgDef.dlc}, 实际 DLC=${frame.dlc}`,
+            details: `CAN ID: 0x${frame.arbitrationId.toString(16).toUpperCase()}`
+          });
+        }
+
+        for (const [name, rawValue] of Object.entries(frame.decoded)) {
+          const value = rawValue as number;
+          if (!signalDataMap.has(name)) signalDataMap.set(name, []);
+          signalDataMap.get(name)!.push(value);
+
+          const sigInfo = signalMap.get(name);
+          if (sigInfo && (value < sigInfo.min || value > sigInfo.max)) {
+            anomalyCountByType.out_of_range++;
+            anomalies.push({
+              type: 'out_of_range',
+              frameId: frame.id,
+              timestamp: frame.timestamp,
+              message: `${name} 值超出范围`,
+              details: `值: ${value.toFixed(2)}${sigInfo.unit}, 范围: [${sigInfo.min}, ${sigInfo.max}]`
+            });
+          }
+
+          const prev = prevSignalValues.get(name);
+          if (prev !== undefined && sigInfo) {
+            const range = sigInfo.max - sigInfo.min;
+            if (range > 0 && Math.abs(value - prev) > range * 0.5) {
+              anomalyCountByType.jump++;
+              anomalies.push({
+                type: 'jump',
+                frameId: frame.id,
+                timestamp: frame.timestamp,
+                message: `${name} 值突变`,
+                details: `${prev.toFixed(2)} → ${value.toFixed(2)}${sigInfo.unit}, 变化: ${(Math.abs(value - prev)).toFixed(2)}`
+              });
+            }
+          }
+          prevSignalValues.set(name, value);
+        }
+      } else {
+        undecodedCount++;
+        anomalyCountByType.unknown_id++;
+        anomalies.push({
+          type: 'unknown_id',
+          frameId: frame.id,
+          timestamp: frame.timestamp,
+          message: '未知 CAN ID（无 DBC 定义）',
+          details: `CAN ID: 0x${frame.arbitrationId.toString(16).toUpperCase()}`
+        });
+      }
+    }
+
+    const signalStats: SignalStats[] = [];
+    for (const [name, values] of signalDataMap.entries()) {
+      const sigInfo = signalMap.get(name);
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const avg = values.reduce((s, v) => s + v, 0) / values.length;
+      const outOfRangeCount = sigInfo
+        ? values.filter(v => v < sigInfo.min || v > sigInfo.max).length
+        : 0;
+
+      signalStats.push({
+        name,
+        count: values.length,
+        min,
+        max,
+        avg,
+        last: values[values.length - 1],
+        unit: sigInfo?.unit || '',
+        outOfRangeCount
+      });
+    }
+    signalStats.sort((a, b) => b.count - a.count);
+
+    anomalies.sort((a, b) => b.timestamp - a.timestamp);
+
+    return {
+      frameCount: fs.length,
+      timeRange: timeStart !== null && timeEnd !== null
+        ? { start: timeStart, end: timeEnd }
+        : null,
+      rxCount,
+      txCount,
+      uniqueIds: uniqueIdSet.size,
+      decodedCount,
+      undecodedCount,
+      signalStats,
+      anomalies,
+      anomalyCountByType
+    };
+  }
+
   function exportFrames(): string {
     const header = 'Timestamp,Direction,CAN_ID,DLC,Data,Decoded\n';
     const rows = frames.value.map(f => {
@@ -213,6 +363,7 @@ export const useCanBusStore = defineStore('canbus', () => {
     startCapture,
     stopCapture,
     decodeFrame,
+    getExportPreview,
     exportFrames
   };
 });
